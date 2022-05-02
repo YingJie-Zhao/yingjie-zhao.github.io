@@ -1,1 +1,498 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Posts on YingJie Zhao</title><link>https://yingjie-zhao.github.io/post/</link><description>Recent content in Posts on YingJie Zhao</description><generator>Hugo -- gohugo.io</generator><language>en-us</language><lastBuildDate>Sun, 01 May 2022 12:47:57 +0800</lastBuildDate><atom:link href="https://yingjie-zhao.github.io/post/index.xml" rel="self" type="application/rss+xml"/><item><title>HelloWorld</title><link>https://yingjie-zhao.github.io/p/helloworld/</link><pubDate>Sun, 01 May 2022 12:47:57 +0800</pubDate><guid>https://yingjie-zhao.github.io/p/helloworld/</guid><description/></item></channel></rss>
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Posts on YingJie Zhao</title><link>https://yingjie-zhao.github.io/post/</link><description>Recent content in Posts on YingJie Zhao</description><generator>Hugo -- gohugo.io</generator><language>en-us</language><lastBuildDate>Sun, 01 May 2022 22:30:21 +0800</lastBuildDate><atom:link href="https://yingjie-zhao.github.io/post/index.xml" rel="self" type="application/rss+xml"/><item><title>Java多线程+信号量探究</title><link>https://yingjie-zhao.github.io/p/java%E5%A4%9A%E7%BA%BF%E7%A8%8B-%E4%BF%A1%E5%8F%B7%E9%87%8F%E6%8E%A2%E7%A9%B6/</link><pubDate>Sun, 01 May 2022 22:30:21 +0800</pubDate><guid>https://yingjie-zhao.github.io/p/java%E5%A4%9A%E7%BA%BF%E7%A8%8B-%E4%BF%A1%E5%8F%B7%E9%87%8F%E6%8E%A2%E7%A9%B6/</guid><description>&lt;img src="https://yingjie-zhao.github.io/p/java%E5%A4%9A%E7%BA%BF%E7%A8%8B-%E4%BF%A1%E5%8F%B7%E9%87%8F%E6%8E%A2%E7%A9%B6/cover.png" alt="Featured image of post Java多线程+信号量探究" />&lt;h2 id="前言">前言&lt;/h2>
+&lt;p>最近在写一个文件批处理框架，用到了Java多线程池。业务需要：&lt;/p>
+&lt;ol>
+&lt;li>提供一个在多线程场景下能够捕捉线程池内线程异常并且上抛到调用方的机制，以实现在多线程提交过程当中，出现异常快速失败&lt;strong>FailFast&lt;/strong>的功能。&lt;/li>
+&lt;li>能够控制任务提交到线程池的速度&lt;/li>
+&lt;/ol>
+&lt;p>对于任务提交速度的控制，使用&lt;code>Semaphore&lt;/code>信号量进行控制。&lt;/p>
+&lt;p>对于捕获多线程执行异常的情况，方案有两种：&lt;/p>
+&lt;ol>
+&lt;li>在提交到线程池的Runnable中，对业务逻辑做异常捕获，如果抛出异常，则将标志位写入Redis，任务提交的代码每隔N个任务检查一次Redis标记位，如果发现异常，则立即停止任务提交。&lt;/li>
+&lt;li>在线程池中对&lt;code>submit()&lt;/code>方法返回的&lt;code>Future&amp;lt;?&amp;gt;&lt;/code>对象进行缓存，每隔N个任务遍历一次缓存的&lt;code>Future&amp;lt;?&amp;gt;&lt;/code>，通过调用其&lt;code>get()&lt;/code>方法，如果异常存在则直接抛出。&lt;/li>
+&lt;/ol>
+&lt;h3 id="threadpoolexecutor">ThreadPoolExecutor&lt;/h3>
+&lt;p>先回顾一下JDK提供的经典线程池&lt;code>ThreadPoolExecutor&lt;/code> 构造方法：&lt;/p>
+&lt;div class="highlight">&lt;div class="chroma">
+&lt;table class="lntable">&lt;tr>&lt;td class="lntd">
+&lt;pre tabindex="0" class="chroma">&lt;code>&lt;span class="lnt">1
+&lt;/span>&lt;span class="lnt">2
+&lt;/span>&lt;span class="lnt">3
+&lt;/span>&lt;span class="lnt">4
+&lt;/span>&lt;span class="lnt">5
+&lt;/span>&lt;span class="lnt">6
+&lt;/span>&lt;span class="lnt">7
+&lt;/span>&lt;span class="lnt">8
+&lt;/span>&lt;span class="lnt">9
+&lt;/span>&lt;/code>&lt;/pre>&lt;/td>
+&lt;td class="lntd">
+&lt;pre tabindex="0" class="chroma">&lt;code class="language-java" data-lang="java">&lt;span class="line">&lt;span class="cl">&lt;span class="kd">public&lt;/span> &lt;span class="nf">ThreadPoolExecutor&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="kt">int&lt;/span> &lt;span class="n">corePoolSize&lt;/span>&lt;span class="o">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int&lt;/span> &lt;span class="n">maximumPoolSize&lt;/span>&lt;span class="o">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">long&lt;/span> &lt;span class="n">keepAliveTime&lt;/span>&lt;span class="o">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">TimeUnit&lt;/span> &lt;span class="n">unit&lt;/span>&lt;span class="o">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">BlockingQueue&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">Runnable&lt;/span>&lt;span class="o">&amp;gt;&lt;/span> &lt;span class="n">workQueue&lt;/span>&lt;span class="o">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">ThreadFactory&lt;/span> &lt;span class="n">threadFactory&lt;/span>&lt;span class="o">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">RejectedExecutionHandler&lt;/span> &lt;span class="n">handler&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="c1">// some basic verification code
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/td>&lt;/tr>&lt;/table>
+&lt;/div>
+&lt;/div>&lt;ol>
+&lt;li>&lt;code>corePoolSize&lt;/code> 用于设置线程池核心线程数（除非用的AsynchronousQueue，否则核心线程意味着不会被线程池回收的线程）&lt;/li>
+&lt;li>&lt;code>maximumPoolSize&lt;/code> 用于设置线程池最大线程数（在keepAliveTime后，非核心线程会被线程池回收）&lt;/li>
+&lt;li>&lt;code>keeyAliveTime&lt;/code>用于设置非核心线程存活时间&lt;/li>
+&lt;li>&lt;code>unit&lt;/code>作为&lt;code>TimeUnit&lt;/code>类型用于设置存活时间单位（微秒，毫秒，秒，分，时，日）&lt;/li>
+&lt;li>&lt;code>workQueue&lt;/code>提供一个任务队列给线程池使用，常用的有：
+&lt;ol>
+&lt;li>&lt;code>LinkedBlockingQueue&lt;/code>链表实现，可以设置队列长度，不设置的话默认为无界队列（不推荐使用无界队列，容易资源耗尽）&lt;/li>
+&lt;li>&lt;code>ArrayBlockingQueue&lt;/code>数组实现，必须设置队列长度，因为在线程池中要经常进行出入队操作，所以链表实现会比数组实现性能要高一些（纯个人猜想，没有做过验证）&lt;/li>
+&lt;li>&lt;code>PriorityBlockingQueue&lt;/code>优先级队列，数组实现，二分查找实现排序，必须设置队列长度&lt;/li>
+&lt;/ol>
+&lt;/li>
+&lt;li>&lt;code>threadFactory&lt;/code>线程工厂，线程池内部调用工厂获取线程，不设置的话就用&lt;code>DefaultThreadFactory&lt;/code>&lt;/li>
+&lt;li>&lt;code>handler&lt;/code>线程池拒绝策略，线程池达到最大且等待队列满的情况下调用拒绝策略，JDK提供了四个默认的拒绝策略实现：
+&lt;ol>
+&lt;li>&lt;code>AbortPolicy&lt;/code>直接拒绝，抛出&lt;code>RejectedExecutionException&lt;/code>给线程池调用方&lt;/li>
+&lt;li>&lt;code>CallerRunsPolicy&lt;/code>调用者执行策略，即调用方来执行任务&lt;/li>
+&lt;li>&lt;code>DiscardOldestPolicy&lt;/code>扔掉等待队列中的头节点，即等待时长最久的任务，不抛出异常，继续执行当前提交的任务（不推荐）&lt;/li>
+&lt;li>&lt;code>DiscardPolicy&lt;/code>扔掉当前提交到线程池的任务，不抛出异常，线程池继续运行（不推荐）&lt;/li>
+&lt;/ol>
+&lt;/li>
+&lt;/ol>
+&lt;p>上述就是线程池的全部构造参数，这里不做展开，内容很简单，可以直接看源代码就行。&lt;/p>
+&lt;p>添加线程的方法如下：&lt;/p>
+&lt;div class="highlight">&lt;div class="chroma">
+&lt;table class="lntable">&lt;tr>&lt;td class="lntd">
+&lt;pre tabindex="0" class="chroma">&lt;code>&lt;span class="lnt"> 1
+&lt;/span>&lt;span class="lnt"> 2
+&lt;/span>&lt;span class="lnt"> 3
+&lt;/span>&lt;span class="lnt"> 4
+&lt;/span>&lt;span class="lnt"> 5
+&lt;/span>&lt;span class="lnt"> 6
+&lt;/span>&lt;span class="lnt"> 7
+&lt;/span>&lt;span class="lnt"> 8
+&lt;/span>&lt;span class="lnt"> 9
+&lt;/span>&lt;span class="lnt">10
+&lt;/span>&lt;span class="lnt">11
+&lt;/span>&lt;span class="lnt">12
+&lt;/span>&lt;span class="lnt">13
+&lt;/span>&lt;span class="lnt">14
+&lt;/span>&lt;span class="lnt">15
+&lt;/span>&lt;span class="lnt">16
+&lt;/span>&lt;span class="lnt">17
+&lt;/span>&lt;span class="lnt">18
+&lt;/span>&lt;span class="lnt">19
+&lt;/span>&lt;span class="lnt">20
+&lt;/span>&lt;span class="lnt">21
+&lt;/span>&lt;span class="lnt">22
+&lt;/span>&lt;span class="lnt">23
+&lt;/span>&lt;span class="lnt">24
+&lt;/span>&lt;span class="lnt">25
+&lt;/span>&lt;span class="lnt">26
+&lt;/span>&lt;span class="lnt">27
+&lt;/span>&lt;span class="lnt">28
+&lt;/span>&lt;span class="lnt">29
+&lt;/span>&lt;span class="lnt">30
+&lt;/span>&lt;span class="lnt">31
+&lt;/span>&lt;span class="lnt">32
+&lt;/span>&lt;span class="lnt">33
+&lt;/span>&lt;span class="lnt">34
+&lt;/span>&lt;span class="lnt">35
+&lt;/span>&lt;span class="lnt">36
+&lt;/span>&lt;span class="lnt">37
+&lt;/span>&lt;span class="lnt">38
+&lt;/span>&lt;span class="lnt">39
+&lt;/span>&lt;/code>&lt;/pre>&lt;/td>
+&lt;td class="lntd">
+&lt;pre tabindex="0" class="chroma">&lt;code class="language-java" data-lang="java">&lt;span class="line">&lt;span class="cl">&lt;span class="kd">public&lt;/span> &lt;span class="kt">void&lt;/span> &lt;span class="nf">execute&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">Runnable&lt;/span> &lt;span class="n">command&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="o">(&lt;/span>&lt;span class="n">command&lt;/span> &lt;span class="o">==&lt;/span> &lt;span class="kc">null&lt;/span>&lt;span class="o">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">throw&lt;/span> &lt;span class="k">new&lt;/span> &lt;span class="n">NullPointerException&lt;/span>&lt;span class="o">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="cm">/*
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> * Proceed in 3 steps:
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> *
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> * 1. If fewer than corePoolSize threads are running, try to
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> * start a new thread with the given command as its first
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> * task. The call to addWorker atomically checks runState and
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> * workerCount, and so prevents false alarms that would add
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> * threads when it shouldn&amp;#39;t, by returning false.
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> *
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> * 2. If a task can be successfully queued, then we still need
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> * to double-check whether we should have added a thread
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> * (because existing ones died since last checking) or that
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> * the pool shut down since entry into this method. So we
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> * recheck state and if necessary roll back the enqueuing if
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> * stopped, or start a new thread if there are none.
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> *
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> * 3. If we cannot queue task, then we try to add a new
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> * thread. If it fails, we know we are shut down or saturated
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> * and so reject the task.
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="cm"> */&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int&lt;/span> &lt;span class="n">c&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">ctl&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">get&lt;/span>&lt;span class="o">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="o">(&lt;/span>&lt;span class="n">workerCountOf&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">c&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="o">&amp;lt;&lt;/span> &lt;span class="n">corePoolSize&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="o">(&lt;/span>&lt;span class="n">addWorker&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">command&lt;/span>&lt;span class="o">,&lt;/span> &lt;span class="kc">true&lt;/span>&lt;span class="o">))&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">return&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">c&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">ctl&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">get&lt;/span>&lt;span class="o">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="o">(&lt;/span>&lt;span class="n">isRunning&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">c&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="o">&amp;amp;&amp;amp;&lt;/span> &lt;span class="n">workQueue&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">offer&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">command&lt;/span>&lt;span class="o">))&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int&lt;/span> &lt;span class="n">recheck&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">ctl&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">get&lt;/span>&lt;span class="o">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="o">(!&lt;/span> &lt;span class="n">isRunning&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">recheck&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="o">&amp;amp;&amp;amp;&lt;/span> &lt;span class="n">remove&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">command&lt;/span>&lt;span class="o">))&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">reject&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">command&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">else&lt;/span> &lt;span class="k">if&lt;/span> &lt;span class="o">(&lt;/span>&lt;span class="n">workerCountOf&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">recheck&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="o">==&lt;/span> &lt;span class="n">0&lt;/span>&lt;span class="o">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">addWorker&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="kc">null&lt;/span>&lt;span class="o">,&lt;/span> &lt;span class="kc">false&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">else&lt;/span> &lt;span class="k">if&lt;/span> &lt;span class="o">(!&lt;/span>&lt;span class="n">addWorker&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">command&lt;/span>&lt;span class="o">,&lt;/span> &lt;span class="kc">false&lt;/span>&lt;span class="o">))&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">reject&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">command&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/td>&lt;/tr>&lt;/table>
+&lt;/div>
+&lt;/div>&lt;p>JDK官方文档对于线程添加做了比较详细的注释：&lt;/p>
+&lt;blockquote>
+&lt;ol>
+&lt;li>如果当前线程数小于核心线程数，则添加核心线程运行当前提交到队列中的任务&lt;/li>
+&lt;li>如果当前线程数大于核心线程数，尝试往队列添加任务，如果能添加成功则添加非核心线程（这里做了一个双重检查，避免出现添加任务过程中线程池关闭的情况）&lt;/li>
+&lt;li>如果线程数已经达到线程池上限，且等待队列已满，则调用reject方法，根据构造函数提供的拒绝策略进行处理&lt;/li>
+&lt;/ol>
+&lt;/blockquote>
+&lt;p>以上就是线程池的基本使用规则。&lt;/p>
+&lt;h3 id="semaphore">Semaphore&lt;/h3>
+&lt;p>在很多语言中，都有信号量的机制，Java也不例外，对于信号量的使用，本身是比较简单的一件事情，源码也不多，常用方法如下：&lt;/p>
+&lt;ol>
+&lt;li>
+&lt;p>&lt;code>acuire()&lt;/code>获取一个信号量，如果当前无可用信号量，则阻塞当前线程&lt;/p>
+&lt;div class="highlight">&lt;div class="chroma">
+&lt;table class="lntable">&lt;tr>&lt;td class="lntd">
+&lt;pre tabindex="0" class="chroma">&lt;code>&lt;span class="lnt"> 1
+&lt;/span>&lt;span class="lnt"> 2
+&lt;/span>&lt;span class="lnt"> 3
+&lt;/span>&lt;span class="lnt"> 4
+&lt;/span>&lt;span class="lnt"> 5
+&lt;/span>&lt;span class="lnt"> 6
+&lt;/span>&lt;span class="lnt"> 7
+&lt;/span>&lt;span class="lnt"> 8
+&lt;/span>&lt;span class="lnt"> 9
+&lt;/span>&lt;span class="lnt">10
+&lt;/span>&lt;span class="lnt">11
+&lt;/span>&lt;span class="lnt">12
+&lt;/span>&lt;span class="lnt">13
+&lt;/span>&lt;span class="lnt">14
+&lt;/span>&lt;span class="lnt">15
+&lt;/span>&lt;span class="lnt">16
+&lt;/span>&lt;span class="lnt">17
+&lt;/span>&lt;span class="lnt">18
+&lt;/span>&lt;span class="lnt">19
+&lt;/span>&lt;span class="lnt">20
+&lt;/span>&lt;span class="lnt">21
+&lt;/span>&lt;span class="lnt">22
+&lt;/span>&lt;span class="lnt">23
+&lt;/span>&lt;span class="lnt">24
+&lt;/span>&lt;span class="lnt">25
+&lt;/span>&lt;/code>&lt;/pre>&lt;/td>
+&lt;td class="lntd">
+&lt;pre tabindex="0" class="chroma">&lt;code class="language-java" data-lang="java">&lt;span class="line">&lt;span class="cl">&lt;span class="kd">private&lt;/span> &lt;span class="kt">void&lt;/span> &lt;span class="nf">doAcquireSharedInterruptibly&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="kt">int&lt;/span> &lt;span class="n">arg&lt;/span>&lt;span class="o">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kd">throws&lt;/span> &lt;span class="n">InterruptedException&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kd">final&lt;/span> &lt;span class="n">Node&lt;/span> &lt;span class="n">node&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">addWaiter&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">Node&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">SHARED&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">boolean&lt;/span> &lt;span class="n">failed&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="kc">true&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">try&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">for&lt;/span> &lt;span class="o">(;;)&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kd">final&lt;/span> &lt;span class="n">Node&lt;/span> &lt;span class="n">p&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">node&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">predecessor&lt;/span>&lt;span class="o">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="o">(&lt;/span>&lt;span class="n">p&lt;/span> &lt;span class="o">==&lt;/span> &lt;span class="n">head&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int&lt;/span> &lt;span class="n">r&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">tryAcquireShared&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">arg&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="o">(&lt;/span>&lt;span class="n">r&lt;/span> &lt;span class="o">&amp;gt;=&lt;/span> &lt;span class="n">0&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">setHeadAndPropagate&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">node&lt;/span>&lt;span class="o">,&lt;/span> &lt;span class="n">r&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">p&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">next&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="kc">null&lt;/span>&lt;span class="o">;&lt;/span> &lt;span class="c1">// help GC
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">failed&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="kc">false&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">return&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="o">(&lt;/span>&lt;span class="n">shouldParkAfterFailedAcquire&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">p&lt;/span>&lt;span class="o">,&lt;/span> &lt;span class="n">node&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="o">&amp;amp;&amp;amp;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">parkAndCheckInterrupt&lt;/span>&lt;span class="o">())&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">throw&lt;/span> &lt;span class="k">new&lt;/span> &lt;span class="n">InterruptedException&lt;/span>&lt;span class="o">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span> &lt;span class="k">finally&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="o">(&lt;/span>&lt;span class="n">failed&lt;/span>&lt;span class="o">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">cancelAcquire&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">node&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/td>&lt;/tr>&lt;/table>
+&lt;/div>
+&lt;/div>&lt;/li>
+&lt;li>
+&lt;p>&lt;code>release()&lt;/code>释放一个信号量，发出&lt;code>unpark&lt;/code>指令唤起等待队列&lt;/p>
+&lt;/li>
+&lt;/ol>
+&lt;h2 id="业务逻辑实现">业务逻辑实现&lt;/h2>
+&lt;p>通过对&lt;code>Semaphore&lt;/code>和&lt;code>ThreadPoolExecutor&lt;/code>的搭配，我们可以实现一个理论上可行的&lt;strong>能够控制任务提交至线程池速度，并能够捕获线程池中线程异常的封装&lt;/strong>（注意为什么是理论上可行，后续会详细描述。。。这也是我写这篇文章的原因）&lt;/p>
+&lt;p>先来看我预先实现的代码：&lt;/p>
+&lt;h3 id="asyncthrowableexecutorjava">&lt;em>AsyncThrowableExecutor.java&lt;/em>&lt;/h3>
+&lt;div class="highlight">&lt;div class="chroma">
+&lt;table class="lntable">&lt;tr>&lt;td class="lntd">
+&lt;pre tabindex="0" class="chroma">&lt;code>&lt;span class="lnt"> 1
+&lt;/span>&lt;span class="lnt"> 2
+&lt;/span>&lt;span class="lnt"> 3
+&lt;/span>&lt;span class="lnt"> 4
+&lt;/span>&lt;span class="lnt"> 5
+&lt;/span>&lt;span class="lnt"> 6
+&lt;/span>&lt;span class="lnt"> 7
+&lt;/span>&lt;span class="lnt"> 8
+&lt;/span>&lt;span class="lnt"> 9
+&lt;/span>&lt;span class="lnt">10
+&lt;/span>&lt;span class="lnt">11
+&lt;/span>&lt;span class="lnt">12
+&lt;/span>&lt;span class="lnt">13
+&lt;/span>&lt;span class="lnt">14
+&lt;/span>&lt;span class="lnt">15
+&lt;/span>&lt;span class="lnt">16
+&lt;/span>&lt;span class="lnt">17
+&lt;/span>&lt;span class="lnt">18
+&lt;/span>&lt;span class="lnt">19
+&lt;/span>&lt;span class="lnt">20
+&lt;/span>&lt;span class="lnt">21
+&lt;/span>&lt;span class="lnt">22
+&lt;/span>&lt;span class="lnt">23
+&lt;/span>&lt;span class="lnt">24
+&lt;/span>&lt;span class="lnt">25
+&lt;/span>&lt;span class="lnt">26
+&lt;/span>&lt;span class="lnt">27
+&lt;/span>&lt;span class="lnt">28
+&lt;/span>&lt;span class="lnt">29
+&lt;/span>&lt;span class="lnt">30
+&lt;/span>&lt;span class="lnt">31
+&lt;/span>&lt;span class="lnt">32
+&lt;/span>&lt;span class="lnt">33
+&lt;/span>&lt;span class="lnt">34
+&lt;/span>&lt;span class="lnt">35
+&lt;/span>&lt;span class="lnt">36
+&lt;/span>&lt;span class="lnt">37
+&lt;/span>&lt;span class="lnt">38
+&lt;/span>&lt;span class="lnt">39
+&lt;/span>&lt;span class="lnt">40
+&lt;/span>&lt;span class="lnt">41
+&lt;/span>&lt;span class="lnt">42
+&lt;/span>&lt;span class="lnt">43
+&lt;/span>&lt;span class="lnt">44
+&lt;/span>&lt;span class="lnt">45
+&lt;/span>&lt;span class="lnt">46
+&lt;/span>&lt;span class="lnt">47
+&lt;/span>&lt;span class="lnt">48
+&lt;/span>&lt;span class="lnt">49
+&lt;/span>&lt;span class="lnt">50
+&lt;/span>&lt;span class="lnt">51
+&lt;/span>&lt;span class="lnt">52
+&lt;/span>&lt;span class="lnt">53
+&lt;/span>&lt;span class="lnt">54
+&lt;/span>&lt;/code>&lt;/pre>&lt;/td>
+&lt;td class="lntd">
+&lt;pre tabindex="0" class="chroma">&lt;code class="language-java" data-lang="java">&lt;span class="line">&lt;span class="cl">&lt;span class="kn">package&lt;/span> &lt;span class="nn">com.zhaoyingjie&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">import&lt;/span> &lt;span class="nn">java.util.LinkedList&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">import&lt;/span> &lt;span class="nn">java.util.List&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">import&lt;/span> &lt;span class="nn">java.util.concurrent.*&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kd">public&lt;/span> &lt;span class="kd">class&lt;/span> &lt;span class="nc">AsyncThrowableExecutor&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kd">private&lt;/span> &lt;span class="kd">final&lt;/span> &lt;span class="n">Semaphore&lt;/span> &lt;span class="n">semaphore&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kd">private&lt;/span> &lt;span class="kd">final&lt;/span> &lt;span class="n">ExecutorService&lt;/span> &lt;span class="n">executorService&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kd">private&lt;/span> &lt;span class="kd">final&lt;/span> &lt;span class="n">List&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">Future&lt;/span>&lt;span class="o">&amp;lt;?&amp;gt;&amp;gt;&lt;/span> &lt;span class="n">futures&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kd">private&lt;/span> &lt;span class="kd">final&lt;/span> &lt;span class="kt">int&lt;/span> &lt;span class="n">futureListSize&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kd">public&lt;/span> &lt;span class="nf">AsyncThrowableExecutor&lt;/span>&lt;span class="o">()&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">executorService&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">new&lt;/span> &lt;span class="n">ThreadPoolExecutor&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">5&lt;/span>&lt;span class="o">,&lt;/span> &lt;span class="n">10&lt;/span>&lt;span class="o">,&lt;/span> &lt;span class="n">100&lt;/span>&lt;span class="o">,&lt;/span> &lt;span class="n">TimeUnit&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">SECONDS&lt;/span>&lt;span class="o">,&lt;/span> &lt;span class="k">new&lt;/span> &lt;span class="n">LinkedBlockingQueue&lt;/span>&lt;span class="o">&amp;lt;&amp;gt;(&lt;/span>&lt;span class="n">5&lt;/span>&lt;span class="o">),&lt;/span> &lt;span class="k">new&lt;/span> &lt;span class="n">LoggingCallerRunPolicy&lt;/span>&lt;span class="o">());&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">semaphore&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">new&lt;/span> &lt;span class="n">Semaphore&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">15&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">futureListSize&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">10&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">futures&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">new&lt;/span> &lt;span class="n">LinkedList&lt;/span>&lt;span class="o">&amp;lt;&amp;gt;();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kd">public&lt;/span> &lt;span class="n">ExecutorService&lt;/span> &lt;span class="nf">executorService&lt;/span>&lt;span class="o">()&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">return&lt;/span> &lt;span class="k">this&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">executorService&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kd">public&lt;/span> &lt;span class="kt">void&lt;/span> &lt;span class="nf">execute&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="kd">final&lt;/span> &lt;span class="n">Runnable&lt;/span> &lt;span class="n">runnable&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="kd">throws&lt;/span> &lt;span class="n">InterruptedException&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">checkFutures&lt;/span>&lt;span class="o">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">semaphore&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">acquire&lt;/span>&lt;span class="o">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">try&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">Future&lt;/span>&lt;span class="o">&amp;lt;?&amp;gt;&lt;/span> &lt;span class="n">future&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">executorService&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">submit&lt;/span>&lt;span class="o">(()&lt;/span> &lt;span class="o">-&amp;gt;&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">try&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">runnable&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">run&lt;/span>&lt;span class="o">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span> &lt;span class="k">finally&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">semaphore&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">release&lt;/span>&lt;span class="o">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">});&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">futures&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">add&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">future&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span> &lt;span class="k">catch&lt;/span> &lt;span class="o">(&lt;/span>&lt;span class="n">Exception&lt;/span> &lt;span class="n">e&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">semaphore&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">release&lt;/span>&lt;span class="o">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">throw&lt;/span> &lt;span class="n">e&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kd">private&lt;/span> &lt;span class="kt">void&lt;/span> &lt;span class="nf">checkFutures&lt;/span>&lt;span class="o">()&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="o">(&lt;/span>&lt;span class="n">futures&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">size&lt;/span>&lt;span class="o">()&lt;/span> &lt;span class="o">&amp;gt;=&lt;/span> &lt;span class="n">futureListSize&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">try&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">for&lt;/span> &lt;span class="o">(&lt;/span>&lt;span class="n">Future&lt;/span>&lt;span class="o">&amp;lt;?&amp;gt;&lt;/span> &lt;span class="n">future&lt;/span> &lt;span class="o">:&lt;/span> &lt;span class="n">futures&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">future&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">get&lt;/span>&lt;span class="o">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span> &lt;span class="k">catch&lt;/span> &lt;span class="o">(&lt;/span>&lt;span class="n">ExecutionException&lt;/span> &lt;span class="o">|&lt;/span> &lt;span class="n">InterruptedException&lt;/span> &lt;span class="n">e&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">throw&lt;/span> &lt;span class="k">new&lt;/span> &lt;span class="n">RuntimeException&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">e&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">futures&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">clear&lt;/span>&lt;span class="o">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/td>&lt;/tr>&lt;/table>
+&lt;/div>
+&lt;/div>&lt;h3 id="mainjava">&lt;em>Main.java&lt;/em>&lt;/h3>
+&lt;div class="highlight">&lt;div class="chroma">
+&lt;table class="lntable">&lt;tr>&lt;td class="lntd">
+&lt;pre tabindex="0" class="chroma">&lt;code>&lt;span class="lnt"> 1
+&lt;/span>&lt;span class="lnt"> 2
+&lt;/span>&lt;span class="lnt"> 3
+&lt;/span>&lt;span class="lnt"> 4
+&lt;/span>&lt;span class="lnt"> 5
+&lt;/span>&lt;span class="lnt"> 6
+&lt;/span>&lt;span class="lnt"> 7
+&lt;/span>&lt;span class="lnt"> 8
+&lt;/span>&lt;span class="lnt"> 9
+&lt;/span>&lt;span class="lnt">10
+&lt;/span>&lt;span class="lnt">11
+&lt;/span>&lt;span class="lnt">12
+&lt;/span>&lt;span class="lnt">13
+&lt;/span>&lt;span class="lnt">14
+&lt;/span>&lt;span class="lnt">15
+&lt;/span>&lt;span class="lnt">16
+&lt;/span>&lt;span class="lnt">17
+&lt;/span>&lt;span class="lnt">18
+&lt;/span>&lt;span class="lnt">19
+&lt;/span>&lt;span class="lnt">20
+&lt;/span>&lt;span class="lnt">21
+&lt;/span>&lt;span class="lnt">22
+&lt;/span>&lt;span class="lnt">23
+&lt;/span>&lt;span class="lnt">24
+&lt;/span>&lt;span class="lnt">25
+&lt;/span>&lt;span class="lnt">26
+&lt;/span>&lt;span class="lnt">27
+&lt;/span>&lt;span class="lnt">28
+&lt;/span>&lt;span class="lnt">29
+&lt;/span>&lt;/code>&lt;/pre>&lt;/td>
+&lt;td class="lntd">
+&lt;pre tabindex="0" class="chroma">&lt;code class="language-java" data-lang="java">&lt;span class="line">&lt;span class="cl">&lt;span class="kn">package&lt;/span> &lt;span class="nn">com.zhaoyingjie&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">import&lt;/span> &lt;span class="nn">java.util.concurrent.atomic.AtomicLong&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kd">public&lt;/span> &lt;span class="kd">class&lt;/span> &lt;span class="nc">Main&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kd">public&lt;/span> &lt;span class="kd">static&lt;/span> &lt;span class="kt">void&lt;/span> &lt;span class="nf">main&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">String&lt;/span>&lt;span class="o">[]&lt;/span> &lt;span class="n">args&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="kd">throws&lt;/span> &lt;span class="n">InterruptedException&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">AsyncThrowableExecutor&lt;/span> &lt;span class="n">executor&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">new&lt;/span> &lt;span class="n">AsyncThrowableExecutor&lt;/span>&lt;span class="o">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">AtomicLong&lt;/span> &lt;span class="n">atomicLong&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">new&lt;/span> &lt;span class="n">AtomicLong&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">0&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">long&lt;/span> &lt;span class="n">begin&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">System&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">currentTimeMillis&lt;/span>&lt;span class="o">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">for&lt;/span> &lt;span class="o">(&lt;/span>&lt;span class="kt">int&lt;/span> &lt;span class="n">i&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">0&lt;/span>&lt;span class="o">;&lt;/span> &lt;span class="n">i&lt;/span> &lt;span class="o">&amp;lt;&lt;/span> &lt;span class="n">20&lt;/span>&lt;span class="o">;&lt;/span> &lt;span class="n">i&lt;/span>&lt;span class="o">++)&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">try&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">executor&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">execute&lt;/span>&lt;span class="o">(()&lt;/span> &lt;span class="o">-&amp;gt;&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">try&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">Thread&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">sleep&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">100L&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span> &lt;span class="k">catch&lt;/span> &lt;span class="o">(&lt;/span>&lt;span class="n">InterruptedException&lt;/span> &lt;span class="n">e&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">throw&lt;/span> &lt;span class="k">new&lt;/span> &lt;span class="n">RuntimeException&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">e&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">});&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span> &lt;span class="k">catch&lt;/span> &lt;span class="o">(&lt;/span>&lt;span class="n">Exception&lt;/span> &lt;span class="n">e&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">System&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">out&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">printf&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="s">&amp;#34;Error occurred in task %d, %s\n&amp;#34;&lt;/span>&lt;span class="o">,&lt;/span> &lt;span class="n">i&lt;/span>&lt;span class="o">,&lt;/span> &lt;span class="n">e&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">getMessage&lt;/span>&lt;span class="o">());&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">System&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">out&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">printf&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="s">&amp;#34;[Submitted %d task] %s\n&amp;#34;&lt;/span>&lt;span class="o">,&lt;/span> &lt;span class="n">atomicLong&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">incrementAndGet&lt;/span>&lt;span class="o">(),&lt;/span> &lt;span class="n">executor&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">executorService&lt;/span>&lt;span class="o">());&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">long&lt;/span> &lt;span class="n">end&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">System&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">currentTimeMillis&lt;/span>&lt;span class="o">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">Thread&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">sleep&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">5000L&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">System&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">out&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">printf&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="s">&amp;#34;Atomic integer %d, cost %d ms\n&amp;#34;&lt;/span>&lt;span class="o">,&lt;/span> &lt;span class="n">atomicLong&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">get&lt;/span>&lt;span class="o">(),&lt;/span> &lt;span class="n">end&lt;/span> &lt;span class="o">-&lt;/span> &lt;span class="n">begin&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/td>&lt;/tr>&lt;/table>
+&lt;/div>
+&lt;/div>&lt;h3 id="loggingcallerrunpolicyjava">&lt;em>LoggingCallerRunPolicy.java&lt;/em>&lt;/h3>
+&lt;div class="highlight">&lt;div class="chroma">
+&lt;table class="lntable">&lt;tr>&lt;td class="lntd">
+&lt;pre tabindex="0" class="chroma">&lt;code>&lt;span class="lnt"> 1
+&lt;/span>&lt;span class="lnt"> 2
+&lt;/span>&lt;span class="lnt"> 3
+&lt;/span>&lt;span class="lnt"> 4
+&lt;/span>&lt;span class="lnt"> 5
+&lt;/span>&lt;span class="lnt"> 6
+&lt;/span>&lt;span class="lnt"> 7
+&lt;/span>&lt;span class="lnt"> 8
+&lt;/span>&lt;span class="lnt"> 9
+&lt;/span>&lt;span class="lnt">10
+&lt;/span>&lt;span class="lnt">11
+&lt;/span>&lt;span class="lnt">12
+&lt;/span>&lt;span class="lnt">13
+&lt;/span>&lt;span class="lnt">14
+&lt;/span>&lt;/code>&lt;/pre>&lt;/td>
+&lt;td class="lntd">
+&lt;pre tabindex="0" class="chroma">&lt;code class="language-java" data-lang="java">&lt;span class="line">&lt;span class="cl">&lt;span class="kn">package&lt;/span> &lt;span class="nn">com.zhaoyingjie&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">import&lt;/span> &lt;span class="nn">java.util.concurrent.ThreadPoolExecutor&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">import&lt;/span> &lt;span class="nn">java.util.concurrent.atomic.AtomicLong&lt;/span>&lt;span class="o">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kd">public&lt;/span> &lt;span class="kd">class&lt;/span> &lt;span class="nc">LoggingCallerRunPolicy&lt;/span> &lt;span class="kd">extends&lt;/span> &lt;span class="n">ThreadPoolExecutor&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">CallerRunsPolicy&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kd">private&lt;/span> &lt;span class="kd">final&lt;/span> &lt;span class="n">AtomicLong&lt;/span> &lt;span class="n">callerRunTimes&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">new&lt;/span> &lt;span class="n">AtomicLong&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">0&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="nd">@Override&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kd">public&lt;/span> &lt;span class="kt">void&lt;/span> &lt;span class="nf">rejectedExecution&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">Runnable&lt;/span> &lt;span class="n">r&lt;/span>&lt;span class="o">,&lt;/span> &lt;span class="n">ThreadPoolExecutor&lt;/span> &lt;span class="n">executor&lt;/span>&lt;span class="o">)&lt;/span> &lt;span class="o">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">System&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">out&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">printf&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="s">&amp;#34;Caller runs %d, Executor info %s\n&amp;#34;&lt;/span>&lt;span class="o">,&lt;/span> &lt;span class="n">callerRunTimes&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">incrementAndGet&lt;/span>&lt;span class="o">(),&lt;/span> &lt;span class="n">executor&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kd">super&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="na">rejectedExecution&lt;/span>&lt;span class="o">(&lt;/span>&lt;span class="n">r&lt;/span>&lt;span class="o">,&lt;/span> &lt;span class="n">executor&lt;/span>&lt;span class="o">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">}&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/td>&lt;/tr>&lt;/table>
+&lt;/div>
+&lt;/div>&lt;p>以上就是这个功能实现的全部设计代码。&lt;/p>
+&lt;h2 id="问题发现与研究">问题发现与研究&lt;/h2>
+&lt;p>原本我预想的是，控制住信号量大小，使其刚好等于&lt;code>maximumPoolSize&lt;/code>+&lt;code>linkedBlockingQueue&lt;/code>阻塞队列的大小，那么在主线程提交任务的时候，如果阻塞队列满了并且达到线程池最大线程数，就会在调用&lt;code>acquire()&lt;/code>方法的时候阻塞住，等到有线程执行完毕上一个任务，调用&lt;code>release()&lt;/code>方法后，主线程再继续进行任务的提交，然鹅理想很丰满，现实很骨感，我发现了一个神奇的现象，控制台输出如下：&lt;/p>
+&lt;div class="highlight">&lt;div class="chroma">
+&lt;table class="lntable">&lt;tr>&lt;td class="lntd">
+&lt;pre tabindex="0" class="chroma">&lt;code>&lt;span class="lnt"> 1
+&lt;/span>&lt;span class="lnt"> 2
+&lt;/span>&lt;span class="lnt"> 3
+&lt;/span>&lt;span class="lnt"> 4
+&lt;/span>&lt;span class="lnt"> 5
+&lt;/span>&lt;span class="lnt"> 6
+&lt;/span>&lt;span class="lnt"> 7
+&lt;/span>&lt;span class="lnt"> 8
+&lt;/span>&lt;span class="lnt"> 9
+&lt;/span>&lt;span class="lnt">10
+&lt;/span>&lt;span class="lnt">11
+&lt;/span>&lt;span class="lnt">12
+&lt;/span>&lt;span class="lnt">13
+&lt;/span>&lt;span class="lnt">14
+&lt;/span>&lt;span class="lnt">15
+&lt;/span>&lt;span class="lnt">16
+&lt;/span>&lt;span class="lnt">17
+&lt;/span>&lt;span class="lnt">18
+&lt;/span>&lt;span class="lnt">19
+&lt;/span>&lt;span class="lnt">20
+&lt;/span>&lt;span class="lnt">21
+&lt;/span>&lt;/code>&lt;/pre>&lt;/td>
+&lt;td class="lntd">
+&lt;pre tabindex="0" class="chroma">&lt;code class="language-bash" data-lang="bash">&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">1&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 1, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 1, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">2&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 2, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 2, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">3&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 3, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 3, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">4&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 4, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 4, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">5&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 5, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 5, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">6&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 5, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 5, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 1, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">7&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 5, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 5, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 2, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">8&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 5, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 5, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 3, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">9&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 5, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 5, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 4, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">10&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 5, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 5, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 5, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">11&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 6, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 6, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 5, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">12&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 7, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 7, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 5, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">13&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 8, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 8, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 5, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">14&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 9, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 9, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 5, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">15&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 10, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 10, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 5, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Caller runs &lt;span class="m">1&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 10, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 10, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 4, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 1&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">16&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 10, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 4, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 0, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 11&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">17&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 10, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 4, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 1, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 11&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">18&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 10, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 4, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 2, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 11&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">19&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 10, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 4, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 3, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 11&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="o">[&lt;/span>Submitted &lt;span class="m">20&lt;/span> task&lt;span class="o">]&lt;/span> &lt;span class="o">[&lt;/span>Running, pool &lt;span class="nv">size&lt;/span> &lt;span class="o">=&lt;/span> 10, active &lt;span class="nv">threads&lt;/span> &lt;span class="o">=&lt;/span> 4, queued &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 4, completed &lt;span class="nv">tasks&lt;/span> &lt;span class="o">=&lt;/span> 11&lt;span class="o">]&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/td>&lt;/tr>&lt;/table>
+&lt;/div>
+&lt;/div>&lt;p>可以看到，随着任务提交，第1至第5任务，pool size每次+1，第6至第10任务，queued tasks每次+1，第11至第15任务，pool size每次+1，符合我们上面提到的线程池添加线程的规则。&lt;/p>
+&lt;p>但是注意看上述输出的第16行，线程池调用了我自己写的拒绝策略，打印了一行日志，也就是说，我刚才设置的信号量并没有完全控制住提交任务的线程，在任务提交的时候被线程池拒绝了，所以才能看到上述日志。发现这个问题之后，我看了信号量和线程池的源代码很久，也没看出什么问题，并且这个现象随着我调整信号量的大小，线程池大小，任务提交次数（外层for循环）以及任务子线程占用时间（&lt;code>Thread.sleep()&lt;/code>方法），都依旧可以复现。就在我百思不得其解的时候，我突然想到一个问题，我们仔细看上面第16行日志，此时线程池的completed tasks为1，也就是说，在那一瞬间，有一个线程完成了任务的执行，然后调用了&lt;code>release&lt;/code>方法，使得原本阻塞在&lt;code>acquire()&lt;/code>方法出的主线程被唤醒继续执行提交任务，也就是说：&lt;/p>
+&lt;p>&lt;strong>信号量和线程池并不是用的同一个锁对象，意味着，线程池内的线程执行完任务后，先调用&lt;code>release()&lt;/code>信号量方法，然后再return，那么此时线程不一定能够立刻被回收，但是提交任务的主线程被唤醒了，开始执行&lt;code>submit()&lt;/code>方法，换句话说，信号量的释放和线程池的回收存在一定的延迟，这个延迟时间内，如果刚好有线程阻塞在了&lt;code>acquire()&lt;/code>方法那里，并且线程池内队列已满，那么就会触发线程池拒绝策略。&lt;/strong>&lt;/p>
+&lt;p>所以对于目前的设计，如果要保证没有任务被拒绝或者丢弃，最好的解决方案就是调整优化线程池、信号量、等待队列的各参数大小，譬如等待队列可以设置大一些，信号量在允许范围内调小一些，等等，于此同时，使用&lt;code>CallerRunsPolicy&lt;/code>, 即便出现线程池满了的情况下，依旧可以保证任务的完整执行。&lt;/p>
+&lt;p>我将线程池等待队列调整为30，核心线程数调整为&lt;code>availableProcessor*2&lt;/code>，最大线程数调整为&lt;code>abailableProcessor*4&lt;/code>，信号量设置为50之后，出现任务提交被拒绝的次数明显少了很多，但是值得注意的是，我们的线程执行的任务可能是和数据库进行交互的，线程执行时间也会对这个结果产生影响，例如，线程池内所有线程在等待相同时间后，同一时刻同时释放信号量锁，此时主线程进行任务提交产生的被线程池拒绝 的概率就会大大增加，线程执行任务这个耗时需要在自己的业务场景下进行估算，并依此对上述参数进行调整。&lt;/p>
+&lt;p>以上就是我在这次开发期间遇到的线程池和信号量问题的一点探究。如有错误，欢迎各位指正。&lt;/p>
+&lt;p>关于JDK线程池回收机制的讲解，可以参考&lt;a class="link" href="https://www.cnblogs.com/kingsleylam/p/11241625.html" target="_blank" rel="noopener"
+>这里&lt;/a>，里面详细且通俗的描述了线程池内线程的完整生命周期以及一些线程池设计精巧之处的解析，向同行致敬。&lt;/p></description></item><item><title>HelloWorld</title><link>https://yingjie-zhao.github.io/p/helloworld/</link><pubDate>Sun, 01 May 2022 12:47:57 +0800</pubDate><guid>https://yingjie-zhao.github.io/p/helloworld/</guid><description/></item></channel></rss>
